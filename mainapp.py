@@ -121,14 +121,14 @@ if uploaded_file is not None:
 
 
     probs = output_data[0]
-predicted_class = int(np.argmax(probs))
-confidence = float(np.max(probs))
+    predicted_class = int(np.argmax(probs))
+    confidence = float(np.max(probs))
 
-pred_label = CLASS_NAMES[predicted_class] if predicted_class < len(CLASS_NAMES) else f"class_{predicted_class}"
+    pred_label = CLASS_NAMES[predicted_class] if predicted_class < len(CLASS_NAMES) else f"class_{predicted_class}"
 
-st.subheader("Prediction Result")
-st.write("Prediction:", pred_label)
-st.write("Confidence:", f"{confidence*100:.1f}%")
+    st.subheader("Prediction Result")
+    st.write("Prediction:", pred_label)
+    st.write("Confidence:", f"{confidence*100:.1f}%")
 
 
 
