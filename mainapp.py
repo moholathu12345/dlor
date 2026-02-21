@@ -9,6 +9,9 @@ import tensorflow as tf
 import numpy as np
 from PIL import Image
 
+# Optional: only used if model input is float32 and expects EfficientNet preprocessing
+from tensorflow.keras.applications.efficientnet import preprocess_input as eff_pre
+
 # ----------------------------------------
 # Page configuration
 # ----------------------------------------
@@ -26,11 +29,11 @@ st.write("Upload an image to get a prediction.")
 @st.cache_resource
 def load_tflite_model():
     try:
-        interpreter = tf.lite.Interpreter(model_path=r"sufiiswatchingme.tflite")
+        interpreter = tf.lite.Interpreter(model_path="sufiiswatchingme.tflite")
         interpreter.allocate_tensors()
         return interpreter
     except Exception as e:
-        st.error(f"❌ Failed to load TFLite model: {e}")
+        st.error(f"Failed to load TFLite model: {e}")
         st.stop()
 
 interpreter = load_tflite_model()
@@ -40,26 +43,52 @@ st.success("TFLite model loaded successfully")
 input_details = interpreter.get_input_details()
 output_details = interpreter.get_output_details()
 
+# Read expected input shape/dtype from the model
+in_shape = input_details[0]["shape"]      # e.g. [1,224,224,3]
+in_dtype = input_details[0]["dtype"]      # e.g. np.float32 or np.uint8
+
+# Some models may have dynamic batch size; we only care about H,W,C
+H = int(in_shape[1])
+W = int(in_shape[2])
+C = int(in_shape[3])
+
+st.caption(f"Model input: shape={in_shape}, dtype={in_dtype}")
+
 # ----------------------------------------
 # Image preprocessing
 # ----------------------------------------
-def preprocess_image(image, target_size=(28, 28)):
-    # Convert to grayscale
-    image = image.convert("L")
+def preprocess_image(pil_img):
+    # Ensure correct channels (most EfficientNet models want RGB)
+    if C == 3:
+        img = pil_img.convert("RGB")
+    else:
+        # fallback if model expects 1 channel
+        img = pil_img.convert("L")
 
-    # Resize to model input size
-    image = image.resize(target_size)
+    # Resize to model expected size
+    img = img.resize((W, H))
 
-    # Convert to numpy
-    image = np.array(image).astype("float32") / 255.0
+    # To numpy
+    x = np.array(img)
 
-    # Add channel dimension if required
-    image = np.expand_dims(image, axis=-1)
+    # Ensure channel dimension exists for grayscale case
+    if C == 1 and x.ndim == 2:
+        x = np.expand_dims(x, axis=-1)
 
-    # Add batch dimension
-    image = np.expand_dims(image, axis=0)
+    # Add batch dimension: (1, H, W, C)
+    x = np.expand_dims(x, axis=0)
 
-    return image
+    # Handle dtype expectations
+    if in_dtype == np.float32:
+        x = x.astype(np.float32)
+        # EfficientNet preprocessing matches your training pipeline
+        # (EfficientNet preprocess expects 0..255 float, then transforms)
+        x = eff_pre(x)
+    else:
+        # Quantized models typically expect uint8 0..255
+        x = x.astype(in_dtype)
+
+    return x
 
 # ----------------------------------------
 # Upload image
@@ -70,7 +99,7 @@ uploaded_file = st.file_uploader(
 )
 
 if uploaded_file is not None:
-    image = Image.open(uploaded_file).convert("RGB")
+    image = Image.open(uploaded_file)
     st.image(image, caption="Uploaded Image", use_column_width=True)
 
     input_data = preprocess_image(image)
@@ -82,9 +111,13 @@ if uploaded_file is not None:
     interpreter.invoke()
     output_data = interpreter.get_tensor(output_details[0]["index"])
 
-    predicted_class = int(np.argmax(output_data))
-    confidence = float(np.max(output_data))
+    predicted_class = int(np.argmax(output_data, axis=-1)[0])
+    confidence = float(np.max(output_data, axis=-1)[0])
 
     st.subheader("Prediction Result")
     st.write("Predicted class index:", predicted_class)
-    st.write("Confidence:", f"{confidence:.2f}")
+    st.write("Confidence:", f"{confidence:.4f}")
+
+    # Optional: show raw logits/probabilities
+    with st.expander("Show raw model output"):
+        st.write(output_data)
