@@ -118,6 +118,20 @@ if uploaded_file is not None:
     st.write("Predicted class index:", predicted_class)
     st.write("Confidence:", f"{confidence:.4f}")
 
+
+
+    probs = output_data[0]
+predicted_class = int(np.argmax(probs))
+confidence = float(np.max(probs))
+
+pred_label = CLASS_NAMES[predicted_class] if predicted_class < len(CLASS_NAMES) else f"class_{predicted_class}"
+
+st.subheader("Prediction Result")
+st.write("Prediction:", pred_label)
+st.write("Confidence:", f"{confidence*100:.1f}%")
+
+
+
     # Optional: show raw logits/probabilities
     with st.expander("Show raw model output"):
         st.write(output_data)
