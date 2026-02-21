@@ -1,4 +1,4 @@
-[
+CLASS_NAMES = [
   "Apple___Apple_scab",
   "Apple___Black_rot",
   "Apple___Cedar_apple_rust",
@@ -38,3 +38,4 @@
   "Tomato___Tomato_mosaic_virus",
   "Tomato___healthy"
 ]
+
