@@ -1,10 +1,75 @@
-import streamlit as st
-from datetime import datetime
-import random
+# ----------------------------------------
+# Force CPU mode to avoid silent GPU crash
+# ----------------------------------------
+import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 
+import base64
+from datetime import datetime
+
+import streamlit as st
+import tensorflow as tf
+import numpy as np
+from PIL import Image
+
+# EfficientNet preprocessing (only used when model input is float32)
+from tensorflow.keras.applications.efficientnet import preprocess_input as eff_pre
+
+
+# ----------------------------------------
+# Classes
+# ----------------------------------------
+CLASS_NAMES = [
+  "Apple___Apple_scab",
+  "Apple___Black_rot",
+  "Apple___Cedar_apple_rust",
+  "Apple___healthy",
+  "Blueberry___healthy",
+  "Cherry_(including_sour)___Powdery_mildew",
+  "Cherry_(including_sour)___healthy",
+  "Corn_(maize)___Cercospora_leaf_spot Gray_leaf_spot",
+  "Corn_(maize)___Common_rust_",
+  "Corn_(maize)___Northern_Leaf_Blight",
+  "Corn_(maize)___healthy",
+  "Grape___Black_rot",
+  "Grape___Esca_(Black_Measles)",
+  "Grape___Leaf_blight_(Isariopsis_Leaf_Spot)",
+  "Grape___healthy",
+  "Orange___Haunglongbing_(Citrus_greening)",
+  "Peach___Bacterial_spot",
+  "Peach___healthy",
+  "Pepper,_bell___Bacterial_spot",
+  "Pepper,_bell___healthy",
+  "Potato___Early_blight",
+  "Potato___Late_blight",
+  "Potato___healthy",
+  "Raspberry___healthy",
+  "Soybean___healthy",
+  "Squash___Powdery_mildew",
+  "Strawberry___Leaf_scorch",
+  "Strawberry___healthy",
+  "Tomato___Bacterial_spot",
+  "Tomato___Early_blight",
+  "Tomato___Late_blight",
+  "Tomato___Leaf_Mold",
+  "Tomato___Septoria_leaf_spot",
+  "Tomato___Spider_mites Two-spotted_spider_mite",
+  "Tomato___Target_Spot",
+  "Tomato___Tomato_Yellow_Leaf_Curl_Virus",
+  "Tomato___Tomato_mosaic_virus",
+  "Tomato___healthy"
+]
+
+
+# ----------------------------------------
+# Page configuration
+# ----------------------------------------
 st.set_page_config(page_title="Planter - Plant Rotting Detection", page_icon="🌱", layout="wide")
 
-# ---------- Styles (ported from your HTML) ----------
+
+# ----------------------------------------
+# Styles (ported from your HTML)
+# ----------------------------------------
 CSS = """
 <style>
   :root {
@@ -29,19 +94,16 @@ CSS = """
     --radius-lg: 0.75rem;
     --radius-xl: 1rem;
     --transition-fast: 150ms ease;
-    --transition-normal: 300ms ease;
     --container-max: 1100px;
     --font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   }
 
-  /* Streamlit page background */
   .stApp {
     font-family: var(--font-family);
     background: linear-gradient(180deg, var(--bg-secondary) 0%, var(--bg-primary) 100%);
     color: var(--text-primary);
   }
 
-  /* Header */
   .planter-header {
     background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
     color: white;
@@ -77,7 +139,6 @@ CSS = """
     font-size: 1.15rem;
   }
 
-  /* Hero */
   .hero {
     max-width: var(--container-max);
     margin: 0 auto;
@@ -100,7 +161,6 @@ CSS = """
     margin: 0 auto;
   }
 
-  /* Cards */
   .card {
     background: var(--bg-primary);
     border: 1px solid var(--border-color);
@@ -120,7 +180,6 @@ CSS = """
     border-bottom: 2px solid var(--accent-light);
   }
 
-  /* Result card accent */
   .result-card {
     border-left: 4px solid var(--accent-secondary);
     background: linear-gradient(135deg, #ffffff 0%, var(--bg-tertiary) 100%);
@@ -166,12 +225,8 @@ CSS = """
     font-size: 0.95rem;
   }
 
-  .muted {
-    color: var(--text-muted);
-    font-size: 0.9rem;
-  }
+  .muted { color: var(--text-muted); font-size: 0.9rem; }
 
-  /* Streamlit button styling */
   div.stButton > button {
     background: linear-gradient(135deg, var(--accent-primary), var(--accent-primary-hover));
     color: white;
@@ -188,7 +243,6 @@ CSS = """
     box-shadow: var(--shadow-lg);
   }
 
-  /* History items */
   .history-item {
     display: flex;
     gap: 0.75rem;
@@ -223,7 +277,6 @@ CSS = """
     color: var(--accent-primary);
   }
 
-  /* Footer */
   .footer {
     max-width: var(--container-max);
     margin: 1.75rem auto 0 auto;
@@ -235,31 +288,12 @@ CSS = """
   }
 </style>
 """
-
-# ---------- App state ----------
-if "history" not in st.session_state:
-    st.session_state.history = []  # newest first, each: {img_bytes, label, conf, ts}
-
-# ---------- Demo analysis (replace with your real model later) ----------
-def demo_predict(seed_text: str):
-    labels = [
-        ("Healthy Leaf", 0.94),
-        ("Early Rot Detected", 0.87),
-        ("Fungal Infection", 0.79),
-        ("Bacterial Blight", 0.72),
-        ("Nutrient Deficiency", 0.65),
-    ]
-    seed = sum(ord(c) for c in seed_text) % len(labels)
-    label, base_conf = labels[seed]
-
-    # small deterministic jitter to feel "alive"
-    rnd = random.Random(sum(ord(c) for c in seed_text) + 1337)
-    conf = max(0.50, min(0.99, base_conf + rnd.uniform(-0.03, 0.03)))
-    return label, conf
-
-# ---------- Layout ----------
 st.markdown(CSS, unsafe_allow_html=True)
 
+
+# ----------------------------------------
+# Header + Hero
+# ----------------------------------------
 st.markdown(
     """
     <div class="planter-header" role="banner">
@@ -288,50 +322,141 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+
+# ----------------------------------------
+# TFLite model loading (cached)
+# ----------------------------------------
+@st.cache_resource
+def load_tflite_model(model_path: str):
+    interpreter = tf.lite.Interpreter(model_path=model_path)
+    interpreter.allocate_tensors()
+    return interpreter
+
+MODEL_PATH = "sufiiswatchingme.tflite"
+
+try:
+    interpreter = load_tflite_model(MODEL_PATH)
+except Exception as e:
+    st.error(f"Failed to load TFLite model: {e}")
+    st.stop()
+
+input_details = interpreter.get_input_details()
+output_details = interpreter.get_output_details()
+
+in_shape = input_details[0]["shape"]   # [1,H,W,C]
+in_dtype = input_details[0]["dtype"]   # np.float32 or np.uint8, etc.
+
+H = int(in_shape[1])
+W = int(in_shape[2])
+C = int(in_shape[3])
+
+
+# ----------------------------------------
+# Helpers
+# ----------------------------------------
+def preprocess_image(pil_img: Image.Image) -> np.ndarray:
+    # Channels
+    if C == 3:
+        img = pil_img.convert("RGB")
+    else:
+        img = pil_img.convert("L")
+
+    # Resize
+    img = img.resize((W, H))
+
+    # To numpy
+    x = np.array(img)
+
+    # If grayscale, ensure channel dimension exists
+    if C == 1 and x.ndim == 2:
+        x = np.expand_dims(x, axis=-1)
+
+    # Batch dimension
+    x = np.expand_dims(x, axis=0)
+
+    # Dtype handling
+    if in_dtype == np.float32:
+        x = x.astype(np.float32)
+        x = eff_pre(x)  # matches your training preprocessing
+    else:
+        x = x.astype(in_dtype)
+
+    return x
+
+def predict_tflite(pil_img: Image.Image):
+    x = preprocess_image(pil_img)
+
+    interpreter.set_tensor(input_details[0]["index"], x)
+    interpreter.invoke()
+    output = interpreter.get_tensor(output_details[0]["index"])
+
+    probs = output[0]
+    pred_idx = int(np.argmax(probs))
+    conf = float(np.max(probs))
+
+    label = CLASS_NAMES[pred_idx] if pred_idx < len(CLASS_NAMES) else f"class_{pred_idx}"
+    return label, conf, probs
+
+def image_bytes_to_data_uri(img_bytes: bytes) -> str:
+    b64 = base64.b64encode(img_bytes).decode("utf-8")
+    return f"data:image/png;base64,{b64}"
+
+
+# ----------------------------------------
+# Session state for history
+# ----------------------------------------
+if "history" not in st.session_state:
+    st.session_state.history = []  # newest first, each {img_bytes,label,conf,ts}
+
+
+# ----------------------------------------
+# Main layout: left (upload/results) + right (history)
+# ----------------------------------------
 left, right = st.columns([1.25, 0.85], gap="large")
 
-# ---------- Left column: Upload + Results ----------
 with left:
     st.markdown('<div class="card"><div class="card-title">📤 Upload Leaf Image</div>', unsafe_allow_html=True)
 
     uploaded = st.file_uploader(
-        "Drag and drop or click to upload",
+        "Upload leaf image",
         type=["jpg", "jpeg", "png"],
-        label_visibility="collapsed",
         accept_multiple_files=False,
+        label_visibility="collapsed",
     )
 
     st.markdown('<div class="muted">💡 Tip: Use a clear, well-lit photo of a single leaf for best results.</div>', unsafe_allow_html=True)
-    st.markdown("</div>", unsafe_allow_html=True)  # end card
+    st.markdown("</div>", unsafe_allow_html=True)
 
-    # Preview
+    pil_image = None
+    img_bytes = None
+
     if uploaded is not None:
+        pil_image = Image.open(uploaded)
+        img_bytes = uploaded.getvalue()
+
         st.markdown('<div class="card" style="margin-top:1rem;">', unsafe_allow_html=True)
-        st.image(uploaded, caption=f"{uploaded.name} • {uploaded.size/1024:.1f} KB", use_container_width=True)
+        st.image(pil_image, caption=f"{uploaded.name} • {uploaded.size/1024:.1f} KB", use_container_width=True)
         st.markdown("</div>", unsafe_allow_html=True)
 
-    # Analyze button + Results
-    analyze_disabled = uploaded is None
-    if st.button("🔍 Analyze Image", disabled=analyze_disabled, use_container_width=False):
+    analyze_disabled = pil_image is None
+    if st.button("🔍 Analyze Image", disabled=analyze_disabled):
         with st.spinner("Analyzing image with AI model..."):
-            label, conf = demo_predict(uploaded.name)
+            label, conf, probs = predict_tflite(pil_image)
             ts = datetime.now().strftime("%Y-%m-%d %H:%M")
+
             st.session_state.history.insert(
                 0,
-                {
-                    "img_bytes": uploaded.getvalue(),
-                    "label": label,
-                    "conf": conf,
-                    "ts": ts,
-                    "filename": uploaded.name,
-                },
+                {"img_bytes": img_bytes, "label": label, "conf": conf, "ts": ts}
             )
             st.session_state.history = st.session_state.history[:10]
 
-    # Show latest result if available
+            # Store latest probs (optional)
+            st.session_state.latest_probs = probs
+
+    # Results (show latest if exists)
     if st.session_state.history:
         latest = st.session_state.history[0]
-        conf_pct = round(latest["conf"] * 100)
+        conf_pct = int(round(latest["conf"] * 100))
 
         st.markdown('<div class="card result-card" style="margin-top:1rem;">', unsafe_allow_html=True)
         st.markdown('<div class="card-title">✅ Analysis Complete</div>', unsafe_allow_html=True)
@@ -358,51 +483,65 @@ with left:
                 unsafe_allow_html=True,
             )
 
+        # Optional raw output
+        with st.expander("Show raw model output"):
+            probs = getattr(st.session_state, "latest_probs", None)
+            if probs is None:
+                st.write("No output available yet.")
+            else:
+                st.write(probs)
+
+        # Optional top 5
+        with st.expander("Show top 5 predictions"):
+            probs = getattr(st.session_state, "latest_probs", None)
+            if probs is None:
+                st.write("No output available yet.")
+            else:
+                topk = np.argsort(probs)[::-1][:5]
+                for i in topk:
+                    name = CLASS_NAMES[int(i)] if int(i) < len(CLASS_NAMES) else f"class_{int(i)}"
+                    st.write(f"{name}: {float(probs[int(i)])*100:.2f}%")
+
         st.markdown("</div>", unsafe_allow_html=True)
 
-# ---------- Right column: History ----------
 with right:
     st.markdown('<div class="card"><div class="card-title">📋 Recent Analyses</div>', unsafe_allow_html=True)
+    st.caption(f"Model input: shape={in_shape}, dtype={in_dtype}")
 
     if not st.session_state.history:
-        st.markdown('<div class="muted" style="text-align:center; padding: 1.2rem 0;">No analyses yet. Upload an image to get started.</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="muted" style="text-align:center; padding: 1.2rem 0;">No analyses yet. Upload an image to get started.</div>',
+            unsafe_allow_html=True,
+        )
     else:
         for item in st.session_state.history:
-            conf_pct = round(item["conf"] * 100)
+            conf_pct = int(round(item["conf"] * 100))
+            thumb_uri = image_bytes_to_data_uri(item["img_bytes"])
+
             st.markdown(
                 f"""
                 <div class="history-item">
-                  <img class="history-thumb" src="data:image/png;base64,{st.image(item["img_bytes"], output_format="PNG", width=56, caption=None) if False else ""}">
+                  <img class="history-thumb" src="{thumb_uri}" alt="history thumbnail">
+                  <div style="flex:1; min-width:0;">
+                    <div class="history-label">{item["label"]}</div>
+                    <div class="history-meta">
+                      <span>{item["ts"]}</span>
+                      <span class="history-confidence">{conf_pct}%</span>
+                    </div>
+                  </div>
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
 
-        # The above "img in HTML" trick is messy in Streamlit.
-        # So we render history items using Streamlit widgets instead, but styled containers.
-        # Clear the messy block by re-rendering properly:
-        st.markdown("<div></div>", unsafe_allow_html=True)  # noop
+    if st.button("Clear History", use_container_width=True):
+        st.session_state.history = []
+        if "latest_probs" in st.session_state:
+            del st.session_state.latest_probs
+        st.rerun()
 
-        for item in st.session_state.history:
-            conf_pct = round(item["conf"] * 100)
-            # Render a compact row with real image rendering
-            c1, c2 = st.columns([0.28, 0.72], gap="small")
-            with c1:
-                st.image(item["img_bytes"], width=56)
-            with c2:
-                st.markdown(f"**{item['label']}**")
-                st.markdown(f"<span class='muted'>{item['ts']}</span> <span class='history-confidence' style='float:right;'>{conf_pct}%</span>", unsafe_allow_html=True)
-            st.markdown("<div style='height:0.35rem;'></div>", unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
 
-    col_a, col_b = st.columns([1, 1], gap="small")
-    with col_a:
-        if st.button("Clear History", use_container_width=True):
-            st.session_state.history = []
-            st.rerun()
-
-    st.markdown("</div>", unsafe_allow_html=True)  # end card
-
-# ---------- Footer ----------
 st.markdown(
     """
     <div class="footer" role="contentinfo">
